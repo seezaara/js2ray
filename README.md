@@ -3,8 +3,8 @@
 The v2ray vmess protocol, based on nodejs javascript which you can use on cpanel hosts (that support nodejs) and servers
 
 
-##  run
-create file in `/root/js2ray/index.js` and write your script and then run with `systemctl enable js2ray;systemctl restart js2ray;` and your service will run for ever
+## install & run
+run `npm i js2ray` and create file in `/root/js2ray/index.js` and write your script and then run with `systemctl enable js2ray;systemctl restart js2ray;` and your service will run for ever
 ##  debug
 you can stop your service with `systemctl disable js2ray;systemctl stop js2ray;` and then run with `node /root/js2ray/index.js` for debugging
 ##  setup 
