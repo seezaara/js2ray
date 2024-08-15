@@ -107,6 +107,8 @@ you can empty `users: []` array and use `api` for remote controlling :
 
 ```js
 var js2ray = require("js2ray");
+var fs = require("fs");
+var os = require('os');
 var config = {
     inbounds: [
         {
