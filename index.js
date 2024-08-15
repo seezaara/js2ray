@@ -1,103 +1,98 @@
+"use strict";
+const protocols = {}
+protocols.vmess = require('./protocols/vmess')
+const freedom = require('./protocols/freedom');
+// const bridge = require('./protocols/bridge');
+const localNetwork = require('./core/localNetwork');
+const remoteNetwork = require('./core/remoteNetwork');
+const event = require('./core/event');
+const storage = require('./core/storage');
+const api = require('./core/api');
 
-const { WebSocketServer } = require('ws');
-const net = require('net');
-const http = require('http');
-const validator = require('./validator');
-const _server = require('./server');
-const event = require('./event'); 
 
-
-function config(data) {
-    global.log = function (...mess) {
-        if (data.debug) {
-            console.log(...mess)
+// function initbridge(data) {
+//     if (!data.outbound)
+//         throw ("outbound is not defined (in bridge mode outbound must be defined)")
+//     if (data.outbound.protocol)
+//         throw ("do not use outbound protocol in bridge mode")
+//     var remoteProtocol = bridge(data.outbound.networks, remoteNetwork(data.outbound.networks))
+//     for (const i of data.inbounds) {
+//         if (i.protocol)
+//             throw ("do not use inbound protocol in bridge mode")
+//         localNetwork(i.networks, remoteProtocol)
+//     }
+// }
+function remoteRouting(array_outbounds = [], routing) {
+    if (array_outbounds.length == 0)
+        array_outbounds[0] = {
+            protocol: 'freedom'
+        }
+    const outbounds = {}
+    for (const i in array_outbounds) {
+        const outbound = array_outbounds[i]
+        if (!outbound.protocol || outbound.protocol == "freedom") {
+            outbounds[outbound.tag || i] = freedom
+        } else {
+            outbounds[outbound.tag || i] = protocols[outbound.protocol].client(outbound, remoteNetwork(outbound.networks))
         }
     }
-    validator.init(data.users)
-    if (data.network == "ws") {
-        const wss = new WebSocketServer({ port: data.port, host: data.address });
-        wss.on('connection', function connection(ws) {
-            _server.connect(ws, ws._socket.remoteAddress)
-            ws.write = ws.send
-            ws.on("close", _server.close)
-            ws.on('message', _server.message);
-        });
-        log("ws server is running on port", data.port)
+    if (typeof routing == "function") {
+        return function (address, port, cmd, onconnect, onmessage, onclose) {
+            var remoteTag = routing(address, port, cmd, this.tag /* tag */)
+            if (remoteTag === true)
+                return Object.values(outbounds)[0](address, port, cmd, onconnect, onmessage, onclose)
+            else if (outbounds[remoteTag]) {
+                return outbounds[remoteTag](address, port, cmd, onconnect, onmessage, onclose)
+            } else {
+                onclose()
+            }
+        }
+    } else
+        return Object.values(outbounds)[0]
+}
 
-    } else if (data.network == "tcp") {
-        var server = net.createServer(function (localsocket) {
-            _server.connect(localsocket, localsocket.remoteAddress)
-            localsocket.on("error", function () { })
-            localsocket.on("close", _server.close)
-            localsocket.on('data', _server.message);
-        });
-        server.listen(data.port, data.address);
-        log("tcp server is running on port", data.port)
-
-    } else if (data.network == "http") {
-        const HTTP_HEADER = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
-        var server = net.createServer(function (localsocket) {
-            _server.connect(localsocket, localsocket.remoteAddress)
-            localsocket.on("error", function () { })
-            // localsocket.on("close", _server.close)
-            localsocket.on('data', function (buffer) {
-                console.log(buffer + "")
-                var indhttp = buffer.indexOf('\r\n\r\n')
-                if (indhttp != -1 && (buffer.subarray(0, 3) == "GET" || buffer.subarray(0, 4) == "POST")) {
-                    this.write(HTTP_HEADER)
-                    if (buffer.length != indhttp + 4) {
-                        return _server.message.call(this, buffer.subarray(indhttp + 4))
-                    } else {
-                        return
-                    }
-                } else {
-                    _server.message.call(this, buffer)
-                }
-            });
-        });
-        server.listen(data.port, data.address);
-        log("http server is running on port", data.port)
-
-    } else if (data.network == "httpAlt") {
-        const HTTP_HEADER = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
-        var server = http.createServer()
-        server.on('connection', function (localsocket) {
-            _server.connect(localsocket, localsocket.remoteAddress)
-            localsocket.on("error", function () { })
-            localsocket.on('data', function (buffer) {
-                if (buffer.includes("keep-alive")) {
-                    buffer.write(replace(buffer, "keep-alive", "close") + "", 0)
-                } 
-                var indhttp = buffer.indexOf('\r\n\r\n')
-                if (indhttp != -1 && (buffer.subarray(0, 3) == "GET" || buffer.subarray(0, 4) == "POST")) {
-                    this.write(HTTP_HEADER)
-                    if (buffer.length != indhttp + 4) {
-                        return _server.message.call(this, buffer.subarray(indhttp + 4))
-                    } else {
-                        return
-                    }
-                } else {
-                    _server.message.call(this, buffer)
-                }
-            });
-        })
-        server.listen(data.port, data.address);
-        log("http2 server is running on port", data.port)
+function config(data) {
+    storage.location = data.storage
+    storage.read()
+    global.log = function (...mess) {
+        if (data.debug) {
+            data.debug(...mess)
+        }
+        return false;
     }
-    return event;
+    if (data.api)
+        api.init(data.api, protocols)
+    //===========================
+    // if (data.bridge == true) {
+    //     return bridge(data)
+    // }
+    const remoteProtocol = remoteRouting(data.outbounds, data.routing)
+    const locals = []
+    for (const i of data.inbounds) {
+        if (!i.protocol || !(i.protocol in protocols))
+            throw ("inbound protocol is not defined")
+        const local = localNetwork(i.networks, protocols[i.protocol].server(i, remoteProtocol.bind(i)))
+        locals.push(...local)
+    }
+    return {
+        stop: function () {
+            for (var i of locals)
+                i.stop()
+        },
+        start: function () {
+            for (var i of locals) {
+                if (!i)
+                    throw ("inbound network is not defined")
+                i.start()
+            }
+        }
+    }
 }
 
-function replace(buf, a, b) {
-    if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf);
-    const idx = buf.indexOf(a);
-    if (idx === -1) return buf;
-    if (!Buffer.isBuffer(b)) b = Buffer.from(b);
 
-    const before = buf.slice(0, idx);
-    const after = replace(buf.slice(idx + a.length), a, b);
-    const len = idx + b.length + after.length;
-    return Buffer.concat([before, b, after], len);
-}
 module.exports = {
     config,
-} 
+    on: event.on,
+    protocols
+}
+
