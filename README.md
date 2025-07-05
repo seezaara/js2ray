@@ -82,8 +82,7 @@ var config = {
                     address: "0.0.0.0",
                     port: 1080
                 }
-            ],
-            users: []
+            ]
         }
     ],
     debug: function (...e) {
@@ -132,8 +131,7 @@ var config = {
                     address: "0.0.0.0",
                     port: 1080
                 }
-            ],
-            users: []
+            ]
         }
     ],
     outbounds: [
@@ -185,6 +183,7 @@ var config = {
                     type: "http",
                     address: "0.0.0.0",
                     port: 80,
+					ip: ["1.1.1.1"] // limit clients ip 
                     option: {
                         path: "/ws",
                         fake: "hello world"
@@ -198,10 +197,10 @@ var config = {
             networks: [
                 {
                     address: "0.0.0.0",
-                    port: 1080
+                    port: 1080,
+					ip: ["1.1.1.1"] // limit clients ip 
                 }
-            ],
-            users: []
+            ]
         }
     ],
     api: {
@@ -247,8 +246,7 @@ var config = {
                     address: "0.0.0.0",
                     port: 10805,
                 }
-            ],
-            users: []
+            ]
         }
     ],
     // if outbounds not defined, "freedom" is used by default
@@ -273,7 +271,12 @@ var config = {
                     port: 1080,
                 }
             ],
-            users: []
+			users: [
+				{
+					user: "u",
+					pass: "p",
+				}
+			],
         }
     ],
     outbounds: [
@@ -285,7 +288,12 @@ var config = {
                     port: 1080,
                 }
             ],
-            users: []
+			users: [
+				{
+					user: "server-u",
+					pass: "server-p",
+				}
+			],
         }
     ],
     storage: __dirname + "/app.json",
