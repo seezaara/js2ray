@@ -5,7 +5,7 @@ if (process.platform === "linux") {
 Description="Js2ray"
 
 [Service]
-ExecStart=/usr/bin/node js2ray.js
+ExecStart=/usr/bin/node index.js
 WorkingDirectory=/root/js2ray
 Restart=always
 RestartSec=200ms

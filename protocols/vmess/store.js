@@ -11,6 +11,7 @@ const that = {
 
 storage.on("write", save)
 function save() {
+    if(!storage.data) storage.data ={} 
     if (!("vmess" in storage.data)) {
         storage.data.vmess = {}
     }

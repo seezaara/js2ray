@@ -1,6 +1,7 @@
 "use strict";
 const protocols = {}
 protocols.vmess = require('./protocols/vmess')
+protocols.socks = require('./protocols/socks');
 const freedom = require('./protocols/freedom');
 // const bridge = require('./protocols/bridge');
 const localNetwork = require('./core/localNetwork');

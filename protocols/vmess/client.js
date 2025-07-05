@@ -1,7 +1,8 @@
 "use strict";
 
 
-const common = require("./common")
+const common = require("./common") 
+const utils = require('../../core/utils');
 const validator = require("./validator")
 const consts = require("./consts")
 const AdvancedBuffer = require("./advanced-buffer")
@@ -17,6 +18,13 @@ function init(data, remoteNetwork) {
     var randomuser = validator.init(data).get
     return function (address, port, cmd, localConnect, localMessage, localClose) {
 
+        // ========================================== pipe
+        const pipeSocket = localMessage
+        if (typeof pipeSocket == "object") {
+            localMessage = pipeSocket.write.bind(pipeSocket)
+            localClose = pipeSocket.destroy.bind(pipeSocket)
+        }
+        // ==========================================
         const app = {}
         app.localMessage = localMessage
         app.user = {}
@@ -24,7 +32,7 @@ function init(data, remoteNetwork) {
         app._port = common.ntb(port);
         const type = getAddrType(address);
         app._atyp = type;
-        app._host = (type === ATYP_DOMAIN) ? Buffer.from(address) : common.iptoBuffer(address);
+        app._host = (type === ATYP_DOMAIN) ? Buffer.from(address) : utils.iptoBuffer(address);
 
 
         app._staging = Buffer.alloc(0)
@@ -35,33 +43,45 @@ function init(data, remoteNetwork) {
         app._adBuf = new AdvancedBuffer({ getPacketLength: onReceivingLength });
         app._adBuf.on('data', DecodeResponseBody);
 
-        const network = data.networks[Math.floor(Math.random() * data.networks.length)]
+        const network = data.networks.length == 1 ? data.networks[0] : Ddata.networks[Math.floor(Math.random() * data.networks.length)]
+
         var socket = remoteNetwork(
             network.address,
             network.port,
-            undefined,
+            1,
             localConnect,
             DecodeResponseHeader.bind(app),
             localClose,
         )
         socket.app = app
         socket.app.close = socket.close
-        return {
+
+        const out = {
             message: EncodeRequestBody.bind(socket, randomuser),
             close: function () {
                 onclose(socket.app)
                 delete socket.app
             }
         }
+        // ========================================== pipe
+        if (typeof pipeSocket == "object") {
+            pipeSocket.on("error", out.close)
+            pipeSocket.on("close", out.close)
+            pipeSocket.on("data", out.message)
+        }
+        // ==========================================
+        return out
     }
 }
 
 function onerror(app, error, ind) {
-    onclose(app);
     log(error, ind)
+    onclose(app);
 }
 
 function onclose(app) {
+    if (!app)
+        return
     app._isConnecting = false;
     app._isHeaderSent = false;
     app._isHeaderRecv = false;
@@ -153,7 +173,7 @@ function EncodeRequestHeader(app, randomuser) {
     } else {
         app._security = app.user.security || 2
         app._option = 0x05;
-    } 
+    }
     if (app._security == consts.SECURITY_TYPE_CHACHA20_POLY1305) {
         app._dataEncKeyForChaCha20 = common.createChacha20Poly1305Key(app._dataEncKey);
         app._dataDecKeyForChaCha20 = common.createChacha20Poly1305Key(app._dataDecKey);

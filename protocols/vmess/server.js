@@ -6,6 +6,8 @@ const kdf = require("./kdf")
 const consts = require("./consts")
 const crypto = require("crypto");
 
+const utils = require('../../core/utils');
+
 
 const ATYP_V4 = 0x01;
 const ATYP_DOMAIN = 0x02;
@@ -35,6 +37,8 @@ function init(data, remoteProtocol) {
         }
     }
 }
+
+
 
 
 function DecodeRequestHeader(remoteProtocol, onRemoteMessage, onRemoteClose, checkuser, buffer) {
@@ -130,7 +134,7 @@ function DecodeRequestHeader(remoteProtocol, onRemoteMessage, onRemoteClose, che
             // 5 'none'
             // 6 'zero'
             const securityType = reqHeader[35] & 0x0F;
-            app._security = securityType; 
+            app._security = securityType;
             if (!(aeadUser.security == 2 || aeadUser.security == undefined || securityType == 2) && securityType != aeadUser.security) {
                 return onerror(app, `not match securety type`, 1);
             }
@@ -144,10 +148,52 @@ function DecodeRequestHeader(remoteProtocol, onRemoteMessage, onRemoteClose, che
             if (![0x01, 0x02].includes(cmd)) {
                 return onerror(app, `unsupported cmd: ${cmd}`, 1);
             }
-            if (cmd == 0x03) {
-                var port = 0
-                var addr = "localhost"
-                var addrType = ATYP_DOMAIN
+            app._cmd = cmd;
+
+            if (cmd === 0x03) {
+                return
+                const socket = this
+
+                // Invoke remoteProtocol with cmd=3, setting up UDP relay
+                app.remote = remoteProtocol(
+                    '0.0.0.0', // target unused
+                    0,
+                    3,
+                    () => {
+                        app._isHeaderRecv = true;
+                        app._isConnecting = false;
+                        app._staging = null;
+                    },
+                    (chunk) => {
+                        console.log(2000)
+                        var buffer = encodeMuxUDPResponse(app.sessionIn, app.sessionID, chunk)
+
+                        buffer = buffer.subarray(2)
+
+                        const frameLength = buffer.readUInt16BE(0);       // not used directly here
+                        const sessionStatus = buffer[4];
+                        const option = buffer[5];
+                        var offset = 6;
+                        if ((option & 0x01) === 0 || sessionStatus !== 0x02)
+                            return console.log(2000, option, sessionStatus);
+                        ;
+                        var id = buffer.readUInt16BE(2);
+
+                        console.log({
+                            frameLength,
+                            sessionStatus,
+                            option,
+                            offset,
+                            id,
+                        });
+
+
+
+                        socket.localMessage(encodeMuxUDPResponse(app.sessionIn, app.sessionID, chunk))
+                    },
+                    onRemoteClose
+                );
+                return; // done with header stage
             }
             else {
                 var port = reqHeader.readUInt16BE(38);
@@ -201,7 +247,7 @@ function DecodeRequestHeader(remoteProtocol, onRemoteMessage, onRemoteClose, che
             const data = buffer.subarray(dataoffset + plainReqHeader.length + 4);
             app._isConnecting = true;
             app.remote = remoteProtocol(
-                addrType === ATYP_DOMAIN ? addr.toString() : common.iptoString(addr),
+                addrType === ATYP_DOMAIN ? addr.toString() : utils.iptoString(addr),
                 port,
                 cmd,
                 function () {
@@ -227,10 +273,69 @@ function DecodeRequestHeader(remoteProtocol, onRemoteMessage, onRemoteClose, che
                 return onerror(app, `maximum ip used by user ${app.user.id.UUID.toString("hex")}`, 1)
             if (!app._adBuf)
                 return onerror(app, 'fail to read _adBuf', 1);
+            // if (app._cmd == 3) {
+            //     return decodeMuxUDPRequest(buffer, app)
+            // }
             app._adBuf.put(buffer, app);
         }
     }
 }
+
+function decodeMuxUDPRequest(buffer, app) {
+    if (buffer.length < 9) return null;
+    app.sessionIn = buffer.subarray(0, 2)
+
+    buffer = buffer.subarray(2)
+    // const frameLength = buffer.readUInt16BE(0);       // not used directly here
+    const sessionStatus = buffer[4];
+    const option = buffer[5];
+    var offset = 6;
+    const network = buffer[offset++];
+    if ((option & 0x01) === 0 || sessionStatus !== 0x02 || network != 2)
+        return;
+    app.sessionID = buffer.readUInt16BE(2);
+
+    let address, port;
+    port = buffer.readUInt16BE(offset);
+    offset += 2;
+
+    const atyp = buffer[offset++];
+    if (atyp === 0x01) { // IPv4
+        address = [...buffer.slice(offset, offset + 4)].join('.');
+        offset += 4;
+    } else if (atyp === 0x03) { // Domain
+        const domainLen = buffer[offset++];
+        address = buffer.slice(offset, offset + domainLen).toString();
+        offset += domainLen;
+    } else if (atyp === 0x04) { // IPv6
+        address = buffer.slice(offset, offset + 16).toString('hex').match(/.{1,4}/g).join(':');
+        offset += 16;
+    } else {
+        throw new Error("Unknown ATYP: " + atyp);
+    }
+
+    offset += 2;
+    return app.remote.message(buffer.slice(offset), port, address);
+}
+
+function encodeMuxUDPResponse(sessionIn, sessionID, payloadBuffer) {
+    const header = Buffer.alloc(6); // 2 length + 2 sessionID + 1 status + 1 option
+
+    // Will fill length later
+    header.writeUInt16BE(0, 0); // Placeholder for length 
+    header.writeUInt16BE(sessionID, 2); // Session ID
+    header[4] = 0x02; // SessionStatusKeep
+    header[5] = 0x01; // OptionData
+
+    const frame = Buffer.concat([sessionIn, header, payloadBuffer]);
+
+    // Now write real length into first 2 bytes (excluding length bytes themselves) 
+
+    frame.writeUInt16BE(frame.length - 2, 0);
+
+    return frame;
+}
+
 
 function EncodeResponseHeader(app) {
     var outBuffer = Buffer.from([app._responseHeader, 0x00, 0x00, 0x00])
@@ -263,8 +368,8 @@ function EncodeResponseBody(buffer) {
             const header = EncodeResponseHeader(app)
             app.user.bytesRead += buffer.length
             const chunks = common.getChunks(buffer, 0x3fff).map(resolveChunk.bind(app));
-            this.localMessage(header)
-            this.localMessage(Buffer.concat([...chunks]))
+            // this.localMessage(header)
+            this.localMessage(Buffer.concat([header, ...chunks]))
         } else {
             app.user.bytesRead += buffer.length
             const chunks = common.getChunks(buffer, 0x3fff).map(resolveChunk.bind(app));
@@ -283,6 +388,7 @@ function DecodeRequestBody(chunk, app) {
             return app.remote.message(data);
     }
     app.user.bytesWrit += chunk.length - 2
+
     if (app.remote)
         return app.remote.message(chunk.subarray(2));
 }
@@ -335,8 +441,8 @@ function onReceivingLength(buffer, app) {
 }
 
 function onerror(app, error, ind) {
-    onclose(app);
     log(error, ind)
+    onclose(app);
 }
 
 function onclose(app) {
