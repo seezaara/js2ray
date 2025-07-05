@@ -1,315 +1,229 @@
 const net = require('net');
 const dgram = require('dgram');
 const utils = require('../../core/utils');
-const SmartBuffer = require('smart-buffer');
 
 function init(data, remoteNetwork) {
 	return function (address, port, cmd, localConnect, localMessage, localClose) {
-		const network = data.networks.length == 1 ? data.networks[0] : data.networks[Math.floor(Math.random() * data.networks.length)]
+		const network = data.networks.length == 1 ? data.networks[0] : data.networks[Math.floor(Math.random() * data.networks.length)];
 
-		// ========================================== pipe 
-		if (typeof localMessage == "object") {
-			var socket = remoteNetwork(
-				network.address,
-				network.port,
-				cmd,
-				function () {
-					onconnect(socket, address, port, function () {
-						localConnect()
-						localMessage.pipe(socket);
-						socket.pipe(localMessage);
-					})
-				},
-				null,
-				null,
-			)
+		if (typeof localMessage === "object") {
+			const socket = remoteNetwork(network.address, network.port, cmd, () => {
+				onconnect(socket, address, port, () => {
+					localConnect();
+					localMessage.pipe(socket);
+					socket.pipe(localMessage);
+				});
+			}, null, null);
 
-			socket._buff = new SmartBuffer();
 			socket._cmd = cmd;
-
-			return
-		} else {
-			if (cmd == 1) {
-				var socket = remoteNetwork(
-					network.address,
-					network.port,
-					cmd,
-					onconnected,
-					null,
-					localClose,
-				)
-				socket._buff = new SmartBuffer();
-				socket._cmd = cmd;
-				function onconnected() {
-					onconnect(socket, address, port, function () {
-						localConnect()
-						socket.on('data', localMessage);
-					})
-				}
-				const out = {
-					message: socket.write.bind(socket),
-					close: onclose.bind(null, socket)
-				}
-				return out
-			} else {
-				var socket = remoteNetwork(
-					network.address,
-					network.port,
-					cmd,
-					onconnected,
-					null,
-					localClose,
-				)
-				socket._buff = new SmartBuffer();
-				socket._cmd = cmd;
-				var udp = new dgram.Socket('udp4');
-				function onconnected() {
-					onconnect(socket, "0.0.0.0", 0, function (localhost, localport) {
-						socket.localhost = localhost
-						socket.localport = localport
-						udp.on('message', function (msg) {
-							let headLength = validateSocks5UDPHead(msg);
-							if (!headLength)
-								return;
-							localMessage(msg.slice(headLength), parseUDPFrame(msg))
-						});
-						udp.on('error', localClose);
-						udp.bind(localConnect)
-					})
-				}
-				const out = {
-					message: function (data, remoteport, remoteHost) {
-						var pack = createUDPFrame(data, remoteHost, remoteport);
-						udp.send(pack, socket.localport, socket.localhost); 
-					},
-					close: onclose.bind(null, socket)
-				}
-				return out
-			}
+			return;
 		}
 
-	}
+		if (cmd === 1) {
+			const socket = remoteNetwork(network.address, network.port, cmd, onconnected, null, localClose);
+			socket._cmd = cmd;
+
+			function onconnected() {
+				onconnect(socket, address, port, () => {
+					localConnect();
+					socket.on('data', localMessage);
+				});
+			}
+
+			return {
+				message: socket.write.bind(socket),
+				close: () => onclose(socket)
+			};
+		} else {
+			const socket = remoteNetwork(network.address, network.port, cmd, onconnected, null, localClose);
+			socket._cmd = cmd;
+			const udp = dgram.createSocket('udp4');
+
+			function onconnected() {
+				onconnect(socket, "0.0.0.0", 0, (localhost, localport) => {
+					socket.localhost = localhost;
+					socket.localport = localport;
+					udp.on('message', (msg) => {
+						const headLength = validateSocks5UDPHead(msg);
+						if (!headLength) return;
+						localMessage(msg.slice(headLength), parseUDPFrame(msg));
+					});
+					udp.on('error', localClose);
+					udp.bind(localConnect);
+				});
+			}
+
+			return {
+				message: (data, remoteport, remoteHost) => {
+					const pack = createUDPFrame(data, remoteHost, remoteport);
+					udp.send(pack, socket.localport, socket.localhost);
+				},
+				close: () => onclose(socket)
+			};
+		}
+	};
 }
-
-
-
-var COMMAND = {
-	Connect: 0x01,
-	Bind: 0x02,
-	UDP_ASSOCIATE: 0x03
-};
-
-
-var SOCKS5_AUTH = {
-	NoAuth: 0x00,
-	GSSApi: 0x01,
-	UserPass: 0x02
-};
-
-var SOCKS5_RESPONSE = {
-	Granted: 0x00,
-	Failure: 0x01,
-	NotAllowed: 0x02,
-	NetworkUnreachable: 0x03,
-	HostUnreachable: 0x04,
-	ConnectionRefused: 0x05,
-	TTLExpired: 0x06,
-	CommandNotSupported: 0x07,
-	AddressNotSupported: 0x08
-};
 
 function onerror(error, socket, ind) {
-	log(error, ind)
+	// console.error(error, ind);
 	onclose(socket);
 }
+
 function onclose(socket) {
 	if (socket) {
 		socket.setTimeout(0);
-		if (socket._buff.destroy)
-			socket._buff.destroy();
-
-		socket.removeAllListeners('close');
-		socket.removeAllListeners('timeout');
-		socket.removeAllListeners('data');
+		socket.removeAllListeners();
 		socket.destroy();
-		socket = null;
 	}
 }
 
-
 function validateSocks5UDPHead(buf) {
 	if (buf[0] !== 0 || buf[1] !== 0) return false;
-	let minLength = 6;//data length without addr
-	if (buf[3] === 0x01) { minLength += 4; }
-	else if (buf[3] === 0x03) { minLength += buf[4]; }
-	else if (buf[3] === 0x04) { minLength += 16; }
+	let minLength = 6;
+	if (buf[3] === 0x01) minLength += 4;
+	else if (buf[3] === 0x03) minLength += buf[4];
+	else if (buf[3] === 0x04) minLength += 16;
 	else return false;
-	if (buf.byteLength < minLength) return false;
+	if (buf.length < minLength) return false;
 	return minLength;
 }
 
 function onconnect(socket, host, port, ready) {
-	const buff = socket._buff
+	const handshake = Buffer.from([0x05, 0x02, 0x00, 0x02]);
+	socket.once('data', handleHandshake);
+	socket.write(handshake);
 
-	buff.writeUInt8(0x05);
-	buff.writeUInt8(2);
-	buff.writeUInt8(SOCKS5_AUTH.NoAuth);
-	buff.writeUInt8(SOCKS5_AUTH.UserPass);
-
-	socket.once('data', handshake);
-	socket.write(buff.toBuffer());
-
-	function handshake(data) {
-		if (data.length !== 2) {
-			onerror("Negotiation Error", socket, 1);
-		} else if (data[0] !== 0x05) {
-			onerror("Negotiation Error (invalid version)", socket, 1);
-		} else if (data[1] === 0xFF) {
-			onerror("Negotiation Error (unacceptable authentication)", socket, 1);
+	function handleHandshake(data) {
+		if (data.length !== 2 || data[0] !== 0x05) return onerror("Negotiation Error", socket);
+		if (data[1] === 0xFF) return onerror("No acceptable auth", socket);
+		if (data[1] === 0x00) {
+			sendRequest();
+		} else if (data[1] === 0x02) {
+			sendAuth();
 		} else {
-			if (data[1] === SOCKS5_AUTH.NoAuth) {
-				sendRequest(host, port);
-			} else if (data[1] === SOCKS5_AUTH.UserPass) {
-				sendAuthentication("", "", host, port);
-			} else {
-				onerror("Negotiation Error (unknown authentication type)", socket, 1);
-			}
+			onerror("Unknown auth method", socket);
 		}
 	}
 
-	function sendAuthentication(user, pass, host, port) {
-		buff.clear();
-		buff.writeUInt8(0x01);
-		buff.writeUInt8(Buffer.byteLength(user));
-		buff.writeString(user);
-		buff.writeUInt8(Buffer.byteLength(pass));
-		buff.writeString(pass);
+	function sendAuth() {
+		const user = "";
+		const pass = "";
+		const userBuf = Buffer.from(user);
+		const passBuf = Buffer.from(pass);
+		const authBuf = Buffer.concat([
+			Buffer.from([0x01, userBuf.length]),
+			userBuf,
+			Buffer.from([passBuf.length]),
+			passBuf
+		]);
+		socket.once('data', handleAuth);
+		socket.write(authBuf);
+	}
 
-		socket.once('data', authenticationResponse);
-		socket.write(buff.toBuffer());
-
-		function authenticationResponse(data) {
-			if (data.length === 2 && data[1] === 0x00) {
-				sendRequest(host, port)
-			} else {
-				onerror("Negotiation Error (authentication failed)", socket, 1);
-			}
+	function handleAuth(data) {
+		if (data.length === 2 && data[1] === 0x00) {
+			sendRequest();
+		} else {
+			onerror("Authentication failed", socket);
 		}
 	}
 
-	function sendRequest(host, port) {
-		buff.clear();
-		buff.writeUInt8(0x05);
-		buff.writeUInt8(socket._cmd);
-		buff.writeUInt8(0x00);
-		// ipv4, ipv6, domain?
+	function sendRequest() {
+		let addrBuf;
 		if (net.isIPv4(host)) {
-			buff.writeUInt8(0x01);
-			buff.writeBuffer(utils.ip4toBuffer(host));
+			addrBuf = Buffer.concat([
+				Buffer.from([0x01]),
+				utils.ip4toBuffer(host)
+			]);
 		} else if (net.isIPv6(host)) {
-			buff.writeUInt8(0x04);
-			buff.writeBuffer(utils.ip6toBuffer(host));
+			addrBuf = Buffer.concat([
+				Buffer.from([0x04]),
+				utils.ip6toBuffer(host)
+			]);
 		} else {
-			buff.writeUInt8(0x03);
-			buff.writeUInt8(host.length);
-			buff.writeString(host);
+			const hostBuf = Buffer.from(host);
+			addrBuf = Buffer.concat([
+				Buffer.from([0x03, hostBuf.length]),
+				hostBuf
+			]);
 		}
-		buff.writeUInt16BE(port);
 
-		socket.once('data', receivedResponse);
-		socket.write(buff.toBuffer());
+		const reqBuf = Buffer.concat([
+			Buffer.from([0x05, socket._cmd, 0x00]),
+			addrBuf,
+			Buffer.from([(port >> 8) & 0xff, port & 0xff])
+		]);
+
+		socket.once('data', handleResponse);
+		socket.write(reqBuf);
 	}
 
-	function receivedResponse(data) {
-		if (data.length < 4) {
-			onerror("Negotiation Error", socket, 1);
-		} else if (data[0] === 0x05 && data[1] === SOCKS5_RESPONSE.Granted) {
-			if (socket._cmd === COMMAND.Connect) {
-				socket.setTimeout(0);
-				if (buff.destroy)
-					buff.destroy();
-				ready();
-			} else if (socket._cmd === COMMAND.Bind || socket._cmd === COMMAND.UDP_ASSOCIATE) {
+	function handleResponse(data) {
+		if (data.length < 4 || data[0] !== 0x05 || data[1] !== 0x00) {
+			return onerror("Request denied: " + data[1], socket);
+		}
 
-				buff.clear();
-				buff.writeBuffer(data);
-				buff.skip(3);
-
-				var host;
-				var port;
-				var addrtype = buff.readUInt8();
-				try {
-					if (addrtype === 0x01) {
-						host = buff.readUInt32BE();
-						if (host === 0)
-							host = socket.localAddress;
-						else
-							host = utils.int2ip(host);
-					} else if (addrtype === 0x03) {
-						var len = buff.readUInt8();
-						host = buff.readString(len);
-					} else if (addrtype === 0x04) {
-						host = buff.readBuffer(16);
-					} else {
-						onerror("Negotiation Error (invalid host address)", socket, 1);
-					}
-					port = buff.readUInt16BE();
-
-					socket.setTimeout(0);
-					if (buff.destroy)
-						buff.destroy();
-					ready(host, port);
-				} catch (ex) {
-					onerror(ex, socket, 1);
-				}
-			}
+		if (socket._cmd === 0x01) {
+			ready();
 		} else {
-			onerror("Negotiation Error (" + data[1] + ")", socket, 1);
+			let addrType = data[3];
+			let offset = 4;
+			let host;
+			if (addrType === 0x01) {
+				host = utils.int2ip(data.readUInt32BE(offset));
+				offset += 4;
+			} else if (addrType === 0x03) {
+				const len = data[offset];
+				offset += 1;
+				host = data.toString("utf8", offset, offset + len);
+				offset += len;
+			} else if (addrType === 0x04) {
+				host = data.slice(offset, offset + 16);
+				offset += 16;
+			} else {
+				return onerror("Invalid address type", socket);
+			}
+			const port = data.readUInt16BE(offset);
+			ready(host, port);
 		}
 	}
 }
 
 function parseUDPFrame(data) {
-	const buff = new SmartBuffer(data.subarray(2))
-
-	const frameNumber = buff.readUInt8()
-	const hostType = buff.readUInt8()
-	let remoteHost
+	let offset = 2; // skip RSV
+	const frame = data[offset++];
+	const hostType = data[offset++];
+	let host;
 
 	if (hostType === 0x01) {
-		remoteHost = utils.int2ip(buff.readUInt32BE())
+		host = utils.int2ip(data.readUInt32BE(offset));
+		offset += 4;
+	} else if (hostType === 0x03) {
+		const len = data[offset++];
+		host = data.toString("utf8", offset, offset + len);
+		offset += len;
 	} else if (hostType === 0x04) {
-		remoteHost = buff.readBuffer(16)
-	} else {
-		remoteHost = buff.readString(buff.readUInt8())
+		host = data.slice(offset, offset + 16);
+		offset += 16;
 	}
-	const remotePort = buff.readUInt16BE()
-	return {
-		address: remoteHost,
-		port: remotePort
-	}
+
+	const port = data.readUInt16BE(offset);
+	return { address: host, port };
 }
 
-function createUDPFrame(data, host, port, frame) {
-	var buff = new SmartBuffer();
-	buff.writeUInt16BE(0);
-	buff.writeUInt8(frame || 0x00);
+function createUDPFrame(data, host, port, frame = 0x00) {
+	const addr = (() => {
+		if (net.isIPv4(host)) {
+			return Buffer.concat([Buffer.from([0x01]), utils.ip4toBuffer(host)]);
+		} else if (net.isIPv6(host)) {
+			return Buffer.concat([Buffer.from([0x04]), utils.ip6toBuffer(host)]);
+		} else {
+			const b = Buffer.from(host);
+			return Buffer.concat([Buffer.from([0x03, b.length]), b]);
+		}
+	})();
+	const portBuf = Buffer.from([(port >> 8) & 0xff, port & 0xff]);
+	return Buffer.concat([Buffer.from([0x00, 0x00, frame]), addr, portBuf, data]);
+}
 
-	if (net.isIPv4(host)) {
-		buff.writeUInt8(0x01);
-		buff.writeUInt32BE(utils.ip2int(host));
-	} else if (net.isIPv6(host)) {
-		buff.writeUInt8(0x04);
-		buff.writeBuffer(utils.ip6toBuffer(host));
-	} else {
-		buff.writeUInt8(0x03);
-		buff.writeUInt8(Buffer.byteLength(host));
-		buff.writeString(host);
-	}
-
-	buff.writeUInt16BE(port);
-	buff.writeBuffer(data);
-	return buff.toBuffer();
-};
-
-module.exports = init
+module.exports = init;

@@ -1,6 +1,6 @@
 {
   "name": "js2ray",
-  "version": "3.0.0",
+  "version": "3.0.2",
   "description": "The v2ray vmess protocol, based on nodejs javascript which you can use on hosts and servers",
   "main": "index.js",
   "bin": "index.js",
