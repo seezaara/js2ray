@@ -4,7 +4,13 @@ const utils = require('../../core/utils');
 
 function init(data, remoteNetwork) {
 	return function (address, port, cmd, localConnect, localMessage, localClose) {
-		const network = data.networks.length == 1 ? data.networks[0] : data.networks[Math.floor(Math.random() * data.networks.length)];
+		const network = data.networks.length === 1
+			? data.networks[0]
+			: data.networks[Math.floor(Math.random() * data.networks.length)];
+
+		const selectedUser = data.users?.length
+			? data.users[Math.floor(Math.random() * data.users.length)]
+			: null;
 
 		if (typeof localMessage === "object") {
 			const socket = remoteNetwork(network.address, network.port, cmd, () => {
@@ -12,7 +18,7 @@ function init(data, remoteNetwork) {
 					localConnect();
 					localMessage.pipe(socket);
 					socket.pipe(localMessage);
-				});
+				}, selectedUser);
 			}, null, null);
 
 			socket._cmd = cmd;
@@ -27,7 +33,7 @@ function init(data, remoteNetwork) {
 				onconnect(socket, address, port, () => {
 					localConnect();
 					socket.on('data', localMessage);
-				});
+				}, selectedUser);
 			}
 
 			return {
@@ -50,7 +56,7 @@ function init(data, remoteNetwork) {
 					});
 					udp.on('error', localClose);
 					udp.bind(localConnect);
-				});
+				}, selectedUser);
 			}
 
 			return {
@@ -64,31 +70,7 @@ function init(data, remoteNetwork) {
 	};
 }
 
-function onerror(error, socket, ind) {
-	// console.error(error, ind);
-	onclose(socket);
-}
-
-function onclose(socket) {
-	if (socket) {
-		socket.setTimeout(0);
-		socket.removeAllListeners();
-		socket.destroy();
-	}
-}
-
-function validateSocks5UDPHead(buf) {
-	if (buf[0] !== 0 || buf[1] !== 0) return false;
-	let minLength = 6;
-	if (buf[3] === 0x01) minLength += 4;
-	else if (buf[3] === 0x03) minLength += buf[4];
-	else if (buf[3] === 0x04) minLength += 16;
-	else return false;
-	if (buf.length < minLength) return false;
-	return minLength;
-}
-
-function onconnect(socket, host, port, ready) {
+function onconnect(socket, host, port, ready, selectedUser) {
 	const handshake = Buffer.from([0x05, 0x02, 0x00, 0x02]);
 	socket.once('data', handleHandshake);
 	socket.write(handshake);
@@ -106,8 +88,8 @@ function onconnect(socket, host, port, ready) {
 	}
 
 	function sendAuth() {
-		const user = "";
-		const pass = "";
+		const user = selectedUser?.user || "";
+		const pass = selectedUser?.pass || "";
 		const userBuf = Buffer.from(user);
 		const passBuf = Buffer.from(pass);
 		const authBuf = Buffer.concat([
@@ -190,7 +172,7 @@ function onconnect(socket, host, port, ready) {
 }
 
 function parseUDPFrame(data) {
-	let offset = 2; // skip RSV
+	let offset = 2;
 	const frame = data[offset++];
 	const hostType = data[offset++];
 	let host;
@@ -224,6 +206,30 @@ function createUDPFrame(data, host, port, frame = 0x00) {
 	})();
 	const portBuf = Buffer.from([(port >> 8) & 0xff, port & 0xff]);
 	return Buffer.concat([Buffer.from([0x00, 0x00, frame]), addr, portBuf, data]);
+}
+
+function validateSocks5UDPHead(buf) {
+	if (buf[0] !== 0 || buf[1] !== 0) return false;
+	let minLength = 6;
+	if (buf[3] === 0x01) minLength += 4;
+	else if (buf[3] === 0x03) minLength += buf[4];
+	else if (buf[3] === 0x04) minLength += 16;
+	else return false;
+	if (buf.length < minLength) return false;
+	return minLength;
+}
+
+function onerror(error, socket, ind) {
+	log(error, ind)
+	onclose(socket);
+}
+
+function onclose(socket) {
+	if (socket) {
+		socket.setTimeout(0);
+		socket.removeAllListeners();
+		socket.destroy();
+	}
 }
 
 module.exports = init;

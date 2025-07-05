@@ -9,6 +9,7 @@ function onerror() {
 
 function localNetwork(data, localProtocol) {
     try {
+        const canIpCheck = data.ip != undefined
         const socketset = new Set();
         if (!data.option) {
             data.option = {}
@@ -19,6 +20,8 @@ function localNetwork(data, localProtocol) {
             data.type = "tcp"
         if (typeof localProtocol == "object") {
             localProtocol.on("connection", function (localsocket) {
+                if (canIpCheck && !checkIP(data.ip, localsocket.remoteAddress))
+                    return localsocket.destroy();
                 socketset.add(localsocket);
                 localsocket.setTimeout(10000);
                 localsocket.on("error", onerror)
@@ -40,6 +43,9 @@ function localNetwork(data, localProtocol) {
             }
         } else if (data.type == "tcp") {
             var server = net.createServer(function (localsocket) {
+                if (canIpCheck && !checkIP(data.ip, localsocket.remoteAddress))
+                    return localsocket.destroy();
+
                 socketset.add(localsocket);
                 localsocket.on("close", function () {
                     socketset.delete(localsocket);
@@ -83,17 +89,15 @@ function localNetwork(data, localProtocol) {
                     var server = http.createServer()
             }
             function connected(ws, req) {
+                const ip = req.headers['cf-connecting-ip'] || req.headers['fastly-client-ip'] || req.headers['x-forwarded-for']?.split(',')[0].trim() || ws._socket.remoteAddress;
+
+                if (canIpCheck && !checkIP(data.ip, ip)) return ws.terminate();
+
                 ws.localMessage = function (buffer) {
                     ws.send(buffer)
                 }
                 ws.localClose = function () {
                     ws.close()
-                }
-                var ip
-                if (req.headers['x-forwarded-for']) {
-                    ip = req.headers['x-forwarded-for'].split(',')[0].trim();
-                } else {
-                    ip = ws._socket.remoteAddress
                 }
                 const remoteProtocol = localProtocol(ws, ip)
                 ws.on("close", function () { remoteProtocol.close() })
@@ -121,6 +125,7 @@ function localNetwork(data, localProtocol) {
             }
         } else if (data.type == "http") {
             var server = net.createServer(function (localsocket) {
+                if (canIpCheck && !checkIP(data.ip, localsocket.remoteAddress)) return localsocket.destroy();
                 const headers = create_header("HTTP/1.1 200 OK", data.option.headers, {
                     "Connection": "keep-alive",
                     "Content-Type": "text/html",
@@ -151,6 +156,7 @@ function localNetwork(data, localProtocol) {
                 localsocket.on('data', function (buffer) {
                     var indhttp = buffer.indexOf('\r\n\r\n')
                     if (indhttp != -1) {
+
                         if (buffer.subarray(0, 3) == "GET" || buffer.subarray(0, 4) == "POST") {
                             var path = buffer.subarray(buffer.indexOf(' ') + 1, buffer.indexOf(' HTTP')).toString()
                             if (typeof data.option.path == "string" ? path == data.option.path : data.option.path.includes(path)) {
@@ -196,6 +202,16 @@ function localNetwork(data, localProtocol) {
             }[data.option.mode || "auto"];
 
             const server = http.createServer((req, res) => {
+                const ip = req.headers['cf-connecting-ip'] || req.headers['fastly-client-ip'] || req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+
+                if (canIpCheck && !checkIP(data.ip, ip)) {
+                    if (data.option.fake) {
+                        return res.end(data.option.fake);
+                    } else {
+                        return req.socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+                    }
+                }
+
                 if (req.socket) req.socket.setTimeout(10000);
 
                 if (host !== undefined &&
@@ -268,9 +284,6 @@ function localNetwork(data, localProtocol) {
                         return req.socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
                     }
 
-                    const ip = req.headers['cf-connecting-ip'] || req.headers['fastly-client-ip'] ||
-                        req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-
                     const localsocket = req.socket;
                     if (!localsocket) return;
 
@@ -337,9 +350,6 @@ function localNetwork(data, localProtocol) {
                         return req.socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
                     }
 
-                    const ip = req.headers['cf-connecting-ip'] || req.headers['fastly-client-ip'] ||
-                        req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-
                     const localsocket = req.socket;
                     if (!localsocket) return;
 
@@ -405,6 +415,19 @@ function create_header(pre, obj = {}, defaults) {
 }
 function pascalCase(str) {
     return str.replace(/\w+/g, function (w) { return w[0].toUpperCase() + w.slice(1).toLowerCase(); })
+}
+function checkIP(ipList, ip) {
+    if (!ipList.length === 0) return true;
+    if (!ip) return false;
+    return ipList.includes(ip) || ipList.includes(ip.replace(/^::ffff:/, ''));
+}
+function checkIP(ipList, ip) {
+    if (ipList.length === 0) return true;
+    if (!(ip && (ipList.includes(ip) || ipList.includes(ip.replace(/^::ffff:/, ''))))) {
+        log("the client " + ip + " was not included in ip lists", 1);
+        return false;
+    }
+    return true;
 }
 module.exports = function (data, localProtocol) {
     const out = []
